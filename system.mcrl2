@@ -1,0 +1,153 @@
+sort
+    comp=struct   CALIBRATE;% | PREMEASURE | MEASURE | PROJECT | SWAP;
+    status=struct READY | OPERATING;
+    recipe=struct RecipeA;% | RecipeB | RecipeAB;
+    places=struct NEUTRAL | TRAY | IN | OUT | MEAS | EMPTY1 | EMPTY2;
+    fromTo=struct pair(from:places,to:places);
+    robot=struct ROBOT1;% | ROBOT2 | ROBOT3;
+
+    %r1places= struct NEUTRAL | TRAY | IN | OUT;
+    %r1fromTo=struct pair(from:r1places,to:r1places);
+
+    %r2places= struct NEUTRAL | IN | MEAS | EMPTY1;
+    %r2fromTo=struct pair(from:r2places,to:r2places);
+
+    %r3places= struct NEUTRAL | MEAS | OUT | EMPTY2;
+    %r3fromTo=struct pair(from:r3places,to:r3places);
+
+
+act
+
+    %component controller
+
+        component_action,
+        component_done,
+
+        %for communication receive "activate" from lot,(1)
+        receive_activate,
+
+        %for communication send "activate_done" to lot,(2)
+        send_activate_done,
+
+    %communication c.controller <-> l.controller
+
+        %communication (1)
+        activate,
+
+        %communication(2)
+        activate_done,
+
+
+    %lot controller
+
+        %for communication send "activate" to c.controller(1)
+        send_activate,
+
+        %for communication recive "activate_done" from c.controller(2)
+        receive_activate_done:comp;
+
+        use_recipe:recipe;
+        moveNotValid;
+
+        %for communication send "move_wafer" to r.controller(3)
+        send_move_wafer,
+
+        %for communication receive "move_wafer_done" from r.controller(4)
+        receive_move_wafer_done,
+
+
+    %communication l.controller <-> r.controller
+
+        %communication(3)
+        move_wafer,
+
+        %communication(4)
+        move_wafer_done,
+
+    %robot controller
+
+        %for communication receive "move_wafer" from l.controller(3)
+        receive_move_wafer,
+
+        %for communication send "move_wafer_done" to l.controller(4)
+        send_move_wafer_done:fromTo;
+
+        move_robot1:fromTo;
+        move_robot2:fromTo;
+        move_robot3:fromTo;
+
+        robot_done:robot;
+
+proc
+
+    %%%%%%%%%%%%%%%%%%%%%%  component controller parece correcto %%%%%%%%%%%%%%%%%%%%%%%
+
+COMP_CONTROLLER(compStatus:status) =
+
+    (compStatus == READY)->sum c:comp. receive_activate(c).component_action(c).
+        component_done(c).send_activate_done(c).COMP_CONTROLLER();
+
+    %(compStatus == OPERATING)->sum d:comp. component_done(d).send_activate_done(d).COMP_CONTROLLER(READY);
+
+    %%%%%%%%%%%%%%%%%%% end component controller %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+    %%%%%%%%%%%%%%%%%%%%%%%% lot controller %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+    LOT_CONTROLLER(lotStatus:status, newLot:Bool) =
+
+        ((lotStatus == READY) && (newLot == true))->
+        sum rec:recipe. use_recipe(rec). LOT_CONTROLLER(OPERATING, false)
+        +
+        (newLot == false)->
+        (sum s:comp. send_activate(s)).LOT_CONTROLLER(OPERATING, false)
+        +
+        (newLot == false)->
+        (sum r:comp. receive_activate_done(r)).LOT_CONTROLLER(OPERATING, false)
+        +
+        (newLot == false)->
+        (sum ps:fromTo. send_move_wafer(ps)).LOT_CONTROLLER(OPERATING, false)
+        +
+        (newLot == false)->
+        (sum pr:fromTo. receive_move_wafer_done(pr)).LOT_CONTROLLER(OPERATING, false);
+
+
+    %%%%%%%%%%%%%%%%%%%%%% end lot controller %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+    %%%%%%%%%%%%%%%%%%%%%%%% robot controller TO do: keep track of robot pos??%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+    ROBT_CONTROLLER(robotStatus:status, robot1Pos:places, robot2Pos:places, robot3Pos:places) =
+
+        %possible moves for robot1
+        sum ft:fromTo. receive_move_wafer(ft).(ft == pair(TRAY,IN) || ft == pair(OUT,TRAY))->
+            move_robot1(ft).send_move_wafer_done(ft).ROBT_CONTROLLER(robotStatus, robot1Pos, robot2Pos, robot3Pos)
+            <> moveNotValid.ROBT_CONTROLLER()
+
+        +
+        %possible moves for robot2
+        sum ft:fromTo. receive_move_wafer(ft).(ft == pair(IN,MEAS) || ft == pair(MEAS,EMPTY1) || ft == pair(EMPTY1,MEAS))->
+            move_robot2(ft).send_move_wafer_done(ft).ROBT_CONTROLLER(robotStatus, robot1Pos, robot2Pos, robot3Pos)
+            <> moveNotValid.ROBT_CONTROLLER()
+        +
+        %possible moves for robot3
+        sum ft:fromTo. receive_move_wafer(ft).(ft == pair(MEAS,OUT) || ft == pair(MEAS,EMPTY2) || ft == pair(EMPTY2,MEAS))->
+            move_robot3(ft).send_move_wafer_done(ft).ROBT_CONTROLLER(robotStatus, robot1Pos, robot2Pos, robot3Pos)
+            <> moveNotValid.ROBT_CONTROLLER();
+
+
+    %%%%%%%%%%%%%%%%%%%%%% end robot controller %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+init
+    hide({move_wafer},
+
+    allow({component_action, component_done,
+           activate, activate_done, move_wafer, move_wafer_done,
+           move_robot1, move_robot2, move_robot3, robot_done, use_recipe, moveNotValid},
+
+    comm({send_activate | receive_activate ->activate,
+          send_activate_done | receive_activate_done ->activate_done,
+
+          send_move_wafer | receive_move_wafer ->move_wafer,
+          send_move_wafer_done | receive_move_wafer_done ->move_wafer_done
+
+        },
+      LOT_CONTROLLER(READY, true) || ROBT_CONTROLLER(READY, NEUTRAL, NEUTRAL, NEUTRAL)  || COMP_CONTROLLER(READY) )));
